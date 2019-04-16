@@ -1,4 +1,4 @@
-# nspline, a single header cubic spline interpolation C99 library
+## nspline, a single header cubic spline interpolation C99 library
 this is a port of: [ttk592/spline](https://github.com/ttk592/spline)
 ## example usage:
 ```
