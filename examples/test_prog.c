@@ -77,7 +77,7 @@ int main(int argc, const char **argv) {
         printf("-----------------\n");
     }
     struct nspline ns;
-    if (nspline_init(&ns, nsp_const_dview(xs, ys, nvals)) != NSP_OK)
+    if (nspline_init(&ns, nsp_copy_dview(xs, ys, nvals)) != NSP_OK)
         die("nspline failed\n");
 
     double dx = (end_x - start_x) / npoints;

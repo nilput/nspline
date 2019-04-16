@@ -36,7 +36,14 @@
     #define NSP_ASSERT(cond, msg) 
 #endif
 
-#define NSP_RSCT restrict
+#ifndef NSP_RSCT
+    #if !defined(_MSC_VER)
+        #define NSP_RSCT restrict
+    #endif
+    #ifndef NSP_RSCT
+        #define NSP_RSCT
+    #endif
+#endif
 
 #define NMAT_NUPPER 1
 #define NMAT_NLOWER 1
@@ -130,15 +137,10 @@ static struct nsp_view nsp_const_dview (double *xs, double *ys, long len) {
 //internal detail: on failure returns .xs == .ys == NULL
 static struct nsp_view nsp_copy_dview (double *xs, double *ys, long len) {
     struct nsp_view rv = {NULL, NULL, 0, true};
-    rv.xs = malloc(sizeof xs[0] * len);
-    if (rv.xs)
+    rv.xs = malloc(sizeof xs[0] * len * 2);
+    if (!rv.xs)
         goto fail;
-    rv.ys = malloc(sizeof ys[0] * len);
-    if (!rv.ys) {
-        free(rv.xs);
-        rv.xs = NULL;
-        goto fail;
-    }
+    rv.ys = rv.xs + len;
     memcpy(rv.xs, xs, sizeof xs[0] * len);
     memcpy(rv.ys, ys, sizeof ys[0] * len);
     rv.len = len;
@@ -156,8 +158,8 @@ static int nsp_is_dataview_valid__(struct nsp_view view) {
 //to avoid double freeing, (nspline_init() calls this, even if it fails)
 static void nsp_dataview_deinit__(struct nsp_view *view) {
     if (view->owns) {
-        free(view->xs);
-        free(view->ys);
+        NSP_ASSERT(view->ys == view->xs + view->len, "invalid pointer to dataset");
+        free(view->xs); //if we allocated them, they're both held by this
     }
     memset(view, 0, sizeof *view);
 }
@@ -431,7 +433,7 @@ static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
     nmat_lu_decompose(nm, &lu_array);
     // solve the equation system to obtain the parameters b[]
     if ((rv = nmat_lu_solve(nm, &lu_array, &rhs, &ns->cff)) != NSP_OK)
-        goto fail;
+        goto fail_lu_array;
     //note we're passing ns->cff as the output we now repack it from [B, B, B] to [?,B,?] [?,B,?] 
     NSP_ASSERT(ns->cff.len == n * 3, "");
     nmat_sol_bbb_0b0_repack(&ns->cff, n);
@@ -461,7 +463,7 @@ static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
     if (ns->opts.linearly_extrapolate)
         SET_CFF(B, n-1, 0.0);
     rv = NSP_OK;
-fail:
+fail_lu_array:
     nsp_ddarray_deinit(&lu_array);
 fail_rhs:
     nsp_ddarray_deinit(&rhs);
