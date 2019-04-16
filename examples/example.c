@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include "nspline.h"
 int main(void) {
-    double xs[5] = {0.5, 1.0, 1.2,  2.0, 3.0};
+    //x values must be strictly increasing
+    double xs[5] = {0.5, 1.0, 1.2,  2.0, 3.0}; 
     double ys[5] = {2.0, 5.0, 10.0, 3.0, 7.0};
     struct nspline ns;
     if (nspline_init(&ns, nsp_const_dview(xs, ys, 5)) != NSP_OK) {

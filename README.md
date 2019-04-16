@@ -5,7 +5,8 @@ this is a port of: [ttk592/spline](https://github.com/ttk592/spline)
     #include <stdio.h>
     #include "nspline.h"
     int main(void) {
-        double xs[5] = {0.5, 1.0, 1.2,  2.0, 3.0};
+        //x values must be strictly increasing
+        double xs[5] = {0.5, 1.0, 1.2,  2.0, 3.0}; 
         double ys[5] = {2.0, 5.0, 10.0, 3.0, 7.0};
         struct nspline ns;
         if (nspline_init(&ns, nsp_const_dview(xs, ys, 5)) != NSP_OK) {
@@ -18,7 +19,8 @@ this is a port of: [ttk592/spline](https://github.com/ttk592/spline)
             double y = nspline_interpolate(&ns, x);
             printf("interpolation of x=%.2f: %.2f\n", x, y);
         }
-        nspline_deinit(&ns); //free resources
+        //free resources
+        nspline_deinit(&ns); 
     }
 ```
 ![graph](resources/fig.png)

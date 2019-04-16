@@ -38,6 +38,9 @@
 
 #define NSP_RSCT restrict
 
+#define NMAT_NUPPER 1
+#define NMAT_NLOWER 1
+
 struct nspline;
 struct nsp_view;
 
@@ -119,14 +122,12 @@ static long nsp_imax(long a, long b) {
     return a > b ? a : b;
 }
 
-//when the library is initialized with this, it doesn't copy, modify nor own the data, but the data must outlive it
 static struct nsp_view nsp_const_dview (double *xs, double *ys, long len) {
     struct nsp_view rv = {xs, ys, len, false};
     return rv;
 }
 
-//when the library is initialized with this, a copy is made and the library manages its lifetime
-//internal detail: on failure returns xs == ys == NULL
+//internal detail: on failure returns .xs == .ys == NULL
 static struct nsp_view nsp_copy_dview (double *xs, double *ys, long len) {
     struct nsp_view rv = {NULL, NULL, 0, true};
     rv.xs = malloc(sizeof xs[0] * len);
@@ -170,8 +171,7 @@ static int nsp_ddarray_init(struct nsp_ddarray *d, long len) {
 }
 static void nsp_ddarray_deinit(struct nsp_ddarray *d) {
     free(d->v);
-    d->v = NULL;
-    d->len = 0;
+    memset(d, 0, sizeof *d);
 }
 
 static int nmat_init(struct nmat *nm, long dim) {
@@ -197,7 +197,6 @@ static long nmat_dim(struct nmat *nm) {
                nm->bands[1].len == nm->bands[2].len, "internal structures corruption");
     return nm->bands[0].len;
 }
-
 //get a pointer to mat[i][j]
 static double *nmat_gp(struct nmat *nm, long i, long j) {
     int k = j - i;
@@ -221,14 +220,12 @@ static struct nsp_opts nsp_default_opts() {
 //fwd
 static int nspline_set_points__(struct nmat *nm, struct nspline *ns);
 
-static int nspline_init(struct nspline *ns, struct nsp_view dataview)
-{
+static int nspline_init(struct nspline *ns, struct nsp_view dataview) {
     int rv = nsp_is_dataview_valid__(dataview);
     if (rv != NSP_OK)
         return rv;
     ns->dv = dataview;
     ns->opts = nsp_default_opts();
-
     //3 because we have 3 coefficents, see struct nspline about how they are stored
     if ((rv = nsp_ddarray_init(&ns->cff, dataview.len * 3)) != NSP_OK) {
         goto fail_dataview;
@@ -240,7 +237,7 @@ static int nspline_init(struct nspline *ns, struct nsp_view dataview)
     if ((rv = nspline_set_points__(&nm, ns)) != NSP_OK)
         goto fail_nmat;
 
-    nmat_deinit(&nm); //we no longer need it
+    nmat_deinit(&nm); 
     return NSP_OK;
 
 fail_nmat:
@@ -274,7 +271,7 @@ static void nmat_sol_bbb_0b0_repack(struct nsp_ddarray *in_out, long npacked) {
     NSP_ASSERT(npacked > 0, "");
     long dest = (npacked - 1) * 3 + NSP_CFF_B;
     NSP_ASSERT(dest < in_out->len, "");
-    //[BBB BBB BBB] -> [?B? ?B? ?B? ?B? ...]
+    //[B1B2B3] [B4..] -> [A1B1C1] [A2B2C2] [A3B3C3] [A4B4C4] ...
     for (long i=npacked-1; i>=0; i--) {
         in_out->v[dest] = in_out->v[i];
         dest -= 3;
@@ -283,22 +280,18 @@ static void nmat_sol_bbb_0b0_repack(struct nsp_ddarray *in_out, long npacked) {
 }
 
 static void nmat_lu_decompose(struct nmat *nm, struct nsp_ddarray *lu_array_out) {
-    const int nlower = 1;
-    const int nupper = 1;
-
-    long  i_max, j_max, j_min;
+    long i_max, j_max, j_min;
     long dim = nmat_dim(nm);
     double x;
     double *lu_arr = lu_array_out->v;
 
     NSP_ASSERT(lu_array_out->len >= dim, "");
-    // preconditioning
-    // normalize column i so that a_ii=1
+    // preconditioning, normalize column i so that a_ii=1
     for (long i=0; i<dim; i++) {
         NSP_ASSERT(nmat_g(nm, i,i) != 0.0, "");
         lu_arr[i] = 1.0 / nmat_g(nm, i, i);
-        j_min = nsp_imax(0, i - nlower);
-        j_max = nsp_imin(dim - 1, i + nupper);
+        j_min = nsp_imax(0, i - NMAT_NLOWER);
+        j_max = nsp_imin(dim - 1, i + NMAT_NUPPER);
         for (long j=j_min; j<=j_max; j++) {
             nmat_s(nm, i, j, nmat_g(nm, i, j) * lu_arr[i]); //mat[i][j] = ..
         }
@@ -307,12 +300,12 @@ static void nmat_lu_decompose(struct nmat *nm, struct nsp_ddarray *lu_array_out)
 
     // Gauss LR-Decomposition
     for (long k=0; k<dim; k++) {
-        i_max = nsp_imin(dim - 1, k + nlower); // num_lower not a mistake!
+        i_max = nsp_imin(dim - 1, k + NMAT_NLOWER); // num_lower not a mistake!
         for (long i=k+1; i<=i_max; i++) {
             NSP_ASSERT(nmat_g(nm, k, k) != 0.0, "");
             x = - nmat_g(nm, i, k) / nmat_g(nm, k, k);
             nmat_s(nm, i, k, -x); //mat[i][k] = -x (assembly part of L)
-            j_max = nsp_imin(dim - 1, k + nupper);
+            j_max = nsp_imin(dim - 1, k + NMAT_NUPPER);
             for (long j=k+1; j<=j_max; j++) {
                 // assembly part of R
                 nmat_s(nm, i, j, nmat_g(nm, i, j) + x * nmat_g(nm, k, j)); // mat[i][j] = ...
@@ -328,8 +321,6 @@ static int nmat_lu_solve(struct nmat *nm,
                           struct nsp_ddarray *output)
 {
     int rv;
-    const int nlower = 1;
-    const int nupper = 1;
     long dim = nmat_dim(nm);
     NSP_ASSERT(rhs->len == dim, "rhs does not have the correct size");
     NSP_ASSERT(lu_array->len == dim, "lu_array does not have the correct size");
@@ -342,13 +333,13 @@ static int nmat_lu_solve(struct nmat *nm,
 
     double * NSP_RSCT tmp_arr = tmp.v;
     double * NSP_RSCT rhs_arr = rhs->v;
-    double * NSP_RSCT lu_arr = lu_array->v;
+    double * NSP_RSCT lu_arr  = lu_array->v;
     double * NSP_RSCT out_arr = output->v;
 
     //y = l_solve(b)
     double sum;
     for (long i=0; i<dim; i++) {
-        long j_start = nsp_imax(0, i-nlower);
+        long j_start = nsp_imax(0, i - NMAT_NLOWER);
         sum = 0;
         for (long j = j_start; j<i; j++)
             sum += nmat_g(nm,i,j) * tmp_arr[j];
@@ -357,11 +348,11 @@ static int nmat_lu_solve(struct nmat *nm,
 
     //x = r_solve(y)
     for (long i=dim-1; i>=0; i--) {
-        long j_stop = nsp_imin(dim - 1, i + nupper);
+        long j_stop = nsp_imin(dim - 1, i + NMAT_NUPPER);
         sum = 0;
         for (long j=i+1; j<=j_stop; j++)
             sum += nmat_g(nm, i, j) * out_arr[j];
-        out_arr[i] = ( tmp_arr[i] - sum ) / nmat_g(nm, i, i);
+        out_arr[i] = (tmp_arr[i] - sum) / nmat_g(nm, i, i);
     }
     
     nsp_ddarray_deinit(&tmp);
@@ -369,7 +360,7 @@ static int nmat_lu_solve(struct nmat *nm,
 }
 
 //temporary macros that eventually get undef'd
-#define GET_CFF(which, idx) nspline_cff_g__(ns, NSP_CFF_ ## which, idx)
+#define GET_CFF(which, idx)      nspline_cff_g__(ns, NSP_CFF_ ## which, idx)
 #define SET_CFF(which, idx, val) nspline_cff_s__(ns, NSP_CFF_ ## which, idx, val);
 
 static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
@@ -388,19 +379,16 @@ static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
     
     struct nsp_ddarray rhs;
     struct nsp_ddarray lu_array;
-    if ((rv = nsp_ddarray_init(&rhs, n)) != NSP_OK) {
+    if ((rv = nsp_ddarray_init(&rhs, n)) != NSP_OK)
         return rv;
-    }
-    if ((rv = nsp_ddarray_init(&lu_array, n)) != NSP_OK) {
-        nsp_ddarray_deinit(&rhs);
-        return rv;
-    }
+    if ((rv = nsp_ddarray_init(&lu_array, n)) != NSP_OK) 
+        goto fail_rhs;
 
     // cubic spline interpolation
     // setting up the matrix and right hand side of the equation system
     // for the parameters b[]
     for (long i=1; i<n-1; i++) {
-        nmat_s(nm, i, i-1,      1.0 / 3.0 * (x[i] - x[i-1]));
+        nmat_s(nm, i, i-1,      1.0 / 3.0 * (x[i]   - x[i-1]));
         nmat_s(nm, i, i,        2.0 / 3.0 * (x[i+1] - x[i-1]));
         nmat_s(nm, i, i+1,      1.0 / 3.0 * (x[i+1] - x[i]));
         rhs.v[i] = (y[i+1] - y[i]) / (x[i+1]-x[i]) - (y[i] - y[i-1]) / (x[i] - x[i-1]);
@@ -442,20 +430,19 @@ static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
     }
     nmat_lu_decompose(nm, &lu_array);
     // solve the equation system to obtain the parameters b[]
-    rv = nmat_lu_solve(nm, &lu_array, &rhs, &ns->cff);
-    if (rv != NSP_OK)
+    if ((rv = nmat_lu_solve(nm, &lu_array, &rhs, &ns->cff)) != NSP_OK)
         goto fail;
-    //note we're passing ns->cff as the output, even though the output is of the form [B, B, B]
-    //we now repack it as [?, B, ?] [?, B, ?] 
+    //note we're passing ns->cff as the output we now repack it from [B, B, B] to [?,B,?] [?,B,?] 
     NSP_ASSERT(ns->cff.len == n * 3, "");
     nmat_sol_bbb_0b0_repack(&ns->cff, n);
     // calculate parameters a[] and c[] based on b[]
     for (long i=0; i<n-1; i++) {
         double b0 = GET_CFF(B, i);
         double b1 = GET_CFF(B, i+1);
+        double a = 1.0 / 3.0 * (b1 - b0) / (x[i+1] - x[i]);
         double c = (y[i+1] - y[i]) / (x[i+1] - x[i]) -
-                    1.0 / 3.0 * (2.0 * b0 + b1) * (x[i+1]-x[i]);
-        SET_CFF(A, i,  1.0 / 3.0 * (b1 - b0) / (x[i+1] - x[i]));
+                    1.0 / 3.0 * (2.0 * b0 + b1) * (x[i+1] - x[i]);
+        SET_CFF(A, i, a);
         SET_CFF(C, i, c);
     }
 
@@ -466,15 +453,18 @@ static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
     // f_{n-1}(x) = b*(x-x_{n-1})^2 + c*(x-x_{n-1}) + y_{n-1}
     double h = x[n-1] - x[n-2];
     // m_b[n-1] is determined by the boundary condition
-    SET_CFF(A, n-1, 0.0);
-    SET_CFF(C, n-1, 3.0 * GET_CFF(A, n-2) *
-                    h*h + 2.0 * GET_CFF(B, n-2) * h + GET_CFF(C, n-2)); // = f'_{n-2}(x_{n-1})
+    {
+        double am2 = GET_CFF(A, n-2), bm2 = GET_CFF(B, n-2), cm2 = GET_CFF(C, n-2);
+        SET_CFF(A, n-1, 0.0);
+        SET_CFF(C, n-1, 3.0 * am2 * h*h + 2.0 * bm2 * h + cm2); // = f'_{n-2}(x_{n-1})
+    }
     if (ns->opts.linearly_extrapolate)
         SET_CFF(B, n-1, 0.0);
     rv = NSP_OK;
 fail:
-    nsp_ddarray_deinit(&rhs);
     nsp_ddarray_deinit(&lu_array);
+fail_rhs:
+    nsp_ddarray_deinit(&rhs);
     return rv;
 }
 
@@ -484,21 +474,12 @@ static long nsp_bsearch_low_bound(double *arr, long beg, long end, double x) {
     long m = beg + (end - beg) / 2;
     long len = end;
     while (beg < end - 1) {
-        //manually inlined (for no good reason)
-        long idx = m;
-        int cmp_result;
-        if ((arr[idx] <= x) && ((idx == len - 1) || ((idx != len - 1) && arr[idx+1] > x)))
-            cmp_result = 0;
-        else
-            cmp_result = arr[idx] > x ? 1 : -1;
-        //end
-
-        if (cmp_result > 0) 
-            end = m;
-        else if (cmp_result < 0)
-            beg = m;
-        else 
+        if ((arr[m] <= x) && ((m == len - 1) || ((m != len - 1) && arr[m+1] > x))) 
             break;
+        else if (arr[m] > x) 
+            end = m;
+        else
+            beg = m;
 
         m = beg + (end - beg) / 2;
     }
@@ -514,11 +495,9 @@ static long nspline_find_low_bound(struct nspline *ns, double x) {
 static double nspline_interpolate(struct nspline *ns, double x)
 {
     long n = ns->dv.len;
-    // find the closest point m_x[idx] < x, idx=0 even if x<m_x[0]
+    // find the closest point m_x[idx] < x, idx=0 even if x < m_x[0]
     long idx = nspline_find_low_bound(ns, x);
-
-    if (idx == -1)
-        idx = 0;
+    idx = idx == -1 ? 0 : idx;
 
     double h = x - ns->dv.xs[idx];
     double interpol;
@@ -526,7 +505,7 @@ static double nspline_interpolate(struct nspline *ns, double x)
         interpol = (ns->b0*h + ns->c0) * h + ns->dv.ys[0];
     } 
     else if (x > ns->dv.xs[n-1]) { // extrapolation to the right
-        interpol = (GET_CFF(B, n-1) * h + GET_CFF(C, n-1))*h + ns->dv.ys[n-1];
+        interpol = (GET_CFF(B, n-1) * h + GET_CFF(C, n-1)) * h + ns->dv.ys[n-1];
     }
     else { // interpolation
         interpol = ((GET_CFF(A, idx) * h + GET_CFF(B, idx)) * h + GET_CFF(C, idx)) * h + ns->dv.ys[idx];
@@ -571,4 +550,4 @@ static double nspline_deriv(struct nspline *ns, int order, double x) {
 #undef GET_CFF
 #undef SET_CFF
 
-#endif /* TK_SPLINE_H */
+#endif  //NSPLINE_H
