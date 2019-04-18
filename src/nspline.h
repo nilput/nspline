@@ -4,8 +4,8 @@
  * a cubic spline interpolation C library without external dependencies
  *
  * ---------------------------------------------------------------------
- * Copyright (C) 2011, 2014 Tino Kluge (ttk448 at gmail.com) (original author (C++))
- * Copyright (C) 2019       Turki. s. (nilputs@gmail.com)    (ported to C)
+ * Copyright (C) 2011, 2014 Tino Kluge (ttk448 at gmail.com)  (original author (C++))
+ * Copyright (C) 2019       Turki. s.  (nilputs at gmail.com) (ported to C)
  *
  *  This program is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU General Public License
@@ -99,9 +99,9 @@ enum NSP_BND_CND {
     NSP_SECOND_DERIV,
 };
 enum NSPC {
-    NSP_CFF_A = 0,
-    NSP_CFF_B,
-    NSP_CFF_C,
+    NSP_COEFF_A = 0,
+    NSP_COEFF_B,
+    NSP_COEFF_C,
 };
 
 struct nsp_opts {
@@ -114,7 +114,7 @@ struct nsp_opts {
 
 //main datastructure of the library
 struct nspline {
-    struct nsp_ddarray cff; //coefficents, stored in a single array as [A, B, C], [A, B, C],
+    struct nsp_ddarray coeff; //coefficents, stored in a single array as [A, B, C], [A, B, C],
     struct nsp_view dv; //where we store the wild pointers
     struct nsp_opts opts;
 
@@ -156,7 +156,7 @@ static int nsp_is_dataview_valid__(struct nsp_view view) {
 
 //internal function, use nsp_const_dview() and nsp_copy_dview() as temporary function arguments
 //to avoid double freeing, (nspline_init() calls this, even if it fails)
-static void nsp_dataview_deinit__(struct nsp_view *view) {
+static void nsp_dataview_deinit(struct nsp_view *view) {
     if (view->owns) {
         NSP_ASSERT(view->ys == view->xs + view->len, "invalid pointer to dataset");
         free(view->xs); //if we allocated them, they're both held by this
@@ -220,7 +220,7 @@ static struct nsp_opts nsp_default_opts() {
 }
 
 //fwd
-static int nspline_set_points__(struct nmat *nm, struct nspline *ns);
+static int nspline_set_points__(struct nspline *ns);
 
 static int nspline_init(struct nspline *ns, struct nsp_view dataview) {
     int rv = nsp_is_dataview_valid__(dataview);
@@ -228,57 +228,50 @@ static int nspline_init(struct nspline *ns, struct nsp_view dataview) {
         return rv;
     ns->dv = dataview;
     ns->opts = nsp_default_opts();
-    //3 because we have 3 coefficents, see struct nspline about how they are stored
-    if ((rv = nsp_ddarray_init(&ns->cff, dataview.len * 3)) != NSP_OK) {
+    //see struct nspline to see how coefficents are stored
+    if ((rv = nsp_ddarray_init(&ns->coeff, dataview.len * 3)) != NSP_OK)
         goto fail_dataview;
-    }
     //create a matrix for solving the thing
-    struct nmat nm;
-    if ((rv = nmat_init(&nm, dataview.len)) != NSP_OK)
-        goto fail_cff;
-    if ((rv = nspline_set_points__(&nm, ns)) != NSP_OK)
-        goto fail_nmat;
+    if ((rv = nspline_set_points__(ns)) != NSP_OK)
+        goto fail_coeff;
 
-    nmat_deinit(&nm); 
     return NSP_OK;
 
-fail_nmat:
-    nmat_deinit(&nm);
-fail_cff:
-    nsp_ddarray_deinit(&ns->cff);
+fail_coeff:
+    nsp_ddarray_deinit(&ns->coeff);
 fail_dataview:
-    nsp_dataview_deinit__(&ns->dv);
+    nsp_dataview_deinit(&ns->dv);
     return rv;
 }
 
 static void nspline_deinit(struct nspline *ns) {
-    nsp_ddarray_deinit(&ns->cff);
-    nsp_dataview_deinit__(&ns->dv);
+    nsp_ddarray_deinit(&ns->coeff);
+    nsp_dataview_deinit(&ns->dv);
 }
 
 //get a pointer to a coefficent
-static double *nspline_cff_gp__(struct nspline *ns, enum NSPC which_cff, long i) {
-    NSP_ASSERT(which_cff >= NSP_CFF_A && which_cff <= NSP_CFF_C, "");
-    NSP_ASSERT(i >= 0 && i < ns->dv.len && (ns->cff.len == ns->dv.len * 3), "");
-    return ns->cff.v + (i * 3) + which_cff;
+static double *nspline_coeff_gp__(struct nspline *ns, enum NSPC which_coeff, long i) {
+    NSP_ASSERT(which_coeff >= NSP_COEFF_A && which_coeff <= NSP_COEFF_C, "");
+    NSP_ASSERT(i >= 0 && i < ns->dv.len && (ns->coeff.len == ns->dv.len * 3), "");
+    return ns->coeff.v + (i * 3) + which_coeff;
 }
-static double nspline_cff_g__(struct nspline *ns, enum NSPC which_cff, long i) {
-    return *nspline_cff_gp__(ns, which_cff, i);
+static double nspline_coeff_g__(struct nspline *ns, enum NSPC which_coeff, long i) {
+    return *nspline_coeff_gp__(ns, which_coeff, i);
 }
-static void nspline_cff_s__(struct nspline *ns, enum NSPC which_cff, long i, double value) {
-    *nspline_cff_gp__(ns, which_cff, i) = value;
+static void nspline_coeff_s__(struct nspline *ns, enum NSPC which_coeff, long i, double value) {
+    *nspline_coeff_gp__(ns, which_coeff, i) = value;
 }
 
 static void nmat_sol_bbb_0b0_repack(struct nsp_ddarray *in_out, long npacked) {
     NSP_ASSERT(npacked > 0, "");
-    long dest = (npacked - 1) * 3 + NSP_CFF_B;
+    long dest = (npacked - 1) * 3 + NSP_COEFF_B;
     NSP_ASSERT(dest < in_out->len, "");
     //[B1B2B3] [B4..] -> [A1B1C1] [A2B2C2] [A3B3C3] [A4B4C4] ...
     for (long i=npacked-1; i>=0; i--) {
         in_out->v[dest] = in_out->v[i];
         dest -= 3;
     }
-    NSP_ASSERT(dest + 3 == NSP_CFF_B, "");
+    NSP_ASSERT(dest + 3 == NSP_COEFF_B, "");
 }
 
 static void nmat_lu_decompose(struct nmat *nm, struct nsp_ddarray *lu_array_out) {
@@ -295,9 +288,9 @@ static void nmat_lu_decompose(struct nmat *nm, struct nsp_ddarray *lu_array_out)
         j_min = nsp_imax(0, i - NMAT_NLOWER);
         j_max = nsp_imin(dim - 1, i + NMAT_NUPPER);
         for (long j=j_min; j<=j_max; j++) {
-            nmat_s(nm, i, j, nmat_g(nm, i, j) * lu_arr[i]); //mat[i][j] = ..
+            nmat_s(nm, i, j,     nmat_g(nm, i, j) * lu_arr[i]);
         }
-        nmat_s(nm, i, i, 1.0); // prevents rounding errors
+        nmat_s(nm, i, i,     1.0); // prevents rounding errors
     }
 
     // Gauss LR-Decomposition
@@ -306,11 +299,10 @@ static void nmat_lu_decompose(struct nmat *nm, struct nsp_ddarray *lu_array_out)
         for (long i=k+1; i<=i_max; i++) {
             NSP_ASSERT(nmat_g(nm, k, k) != 0.0, "");
             x = - nmat_g(nm, i, k) / nmat_g(nm, k, k);
-            nmat_s(nm, i, k, -x); //mat[i][k] = -x (assembly part of L)
+            nmat_s(nm, i, k,     -x); //(assembly part of L)
             j_max = nsp_imin(dim - 1, k + NMAT_NUPPER);
             for (long j=k+1; j<=j_max; j++) {
-                // assembly part of R
-                nmat_s(nm, i, j, nmat_g(nm, i, j) + x * nmat_g(nm, k, j)); // mat[i][j] = ...
+                nmat_s(nm, i, j,     nmat_g(nm, i, j) + x * nmat_g(nm, k, j)); //assembly part of R
             }
         }
     }
@@ -362,15 +354,25 @@ static int nmat_lu_solve(struct nmat *nm,
 }
 
 //temporary macros that eventually get undef'd
-#define GET_CFF(which, idx)      nspline_cff_g__(ns, NSP_CFF_ ## which, idx)
-#define SET_CFF(which, idx, val) nspline_cff_s__(ns, NSP_CFF_ ## which, idx, val);
+#define GET_COEFF(which, idx)      nspline_coeff_g__(ns, NSP_COEFF_ ## which, idx)
+#define SET_COEFF(which, idx, val) nspline_coeff_s__(ns, NSP_COEFF_ ## which, idx, val);
 
-static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
+static int nspline_set_points__(struct nspline *ns) {
     NSP_ASSERT(ns->dv.len > 2, "datapoints must be at least 3");
     int rv;
     long n = ns->dv.len;
     double *x = ns->dv.xs;
     double *y = ns->dv.ys;
+
+    struct nmat nm;
+    if ((rv = nmat_init(&nm, n)) != NSP_OK)
+        return rv;
+    struct nsp_ddarray rhs;
+    if ((rv = nsp_ddarray_init(&rhs, n)) != NSP_OK)
+        goto fail_nmat;
+    struct nsp_ddarray lu_array;
+    if ((rv = nsp_ddarray_init(&lu_array, n)) != NSP_OK)
+        goto fail_rhs;
 
     #ifdef NSP_DEBUG
         for (long i=0; i < n - 1; i++) {
@@ -378,35 +380,28 @@ static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
                         "data not sorted by x, note: there can't be duplicate x values");
         }
     #endif
-    
-    struct nsp_ddarray rhs;
-    struct nsp_ddarray lu_array;
-    if ((rv = nsp_ddarray_init(&rhs, n)) != NSP_OK)
-        return rv;
-    if ((rv = nsp_ddarray_init(&lu_array, n)) != NSP_OK) 
-        goto fail_rhs;
 
     // cubic spline interpolation
     // setting up the matrix and right hand side of the equation system
     // for the parameters b[]
     for (long i=1; i<n-1; i++) {
-        nmat_s(nm, i, i-1,      1.0 / 3.0 * (x[i]   - x[i-1]));
-        nmat_s(nm, i, i,        2.0 / 3.0 * (x[i+1] - x[i-1]));
-        nmat_s(nm, i, i+1,      1.0 / 3.0 * (x[i+1] - x[i]));
+        nmat_s(&nm, i, i-1,      1.0 / 3.0 * (x[i]   - x[i-1]));
+        nmat_s(&nm, i, i,        2.0 / 3.0 * (x[i+1] - x[i-1]));
+        nmat_s(&nm, i, i+1,      1.0 / 3.0 * (x[i+1] - x[i]));
         rhs.v[i] = (y[i+1] - y[i]) / (x[i+1]-x[i]) - (y[i] - y[i-1]) / (x[i] - x[i-1]);
     }
     // boundary conditions
     switch (ns->opts.left_bnd_cnd) {
         case NSP_SECOND_DERIV:
-            nmat_s(nm, 0, 0,        2.0);  // 2*b[0] = f''
-            nmat_s(nm, 0, 1,        0.0); 
+            nmat_s(&nm, 0, 0,        2.0);  // 2*b[0] = f''
+            nmat_s(&nm, 0, 1,        0.0); 
             rhs.v[0] = ns->opts.leftval;
             break;
         case NSP_FIRST_DERIV:
             // c[0] = f', needs to be re-expressed in terms of b:
             // (2b[0]+b[1])(x[1]-x[0]) = 3 ((y[1]-y[0])/(x[1]-x[0]) - f')
-            nmat_s(nm, 0, 0,        2.0 * (x[1] - x[0]));
-            nmat_s(nm, 0, 1,        1.0 * (x[1] - x[0]));
+            nmat_s(&nm, 0, 0,        2.0 * (x[1] - x[0]));
+            nmat_s(&nm, 0, 1,        1.0 * (x[1] - x[0]));
             rhs.v[0] = 3.0 * ((y[1] - y[0]) / (x[1] - x[0]) - ns->opts.leftval);
             break;
         default:
@@ -415,58 +410,59 @@ static int nspline_set_points__(struct nmat *nm, struct nspline *ns) {
     }
     switch (ns->opts.right_bnd_cnd) {
         case NSP_SECOND_DERIV:
-            nmat_s(nm, n-1, n-1,    2.0); // 2*b[n-1] = f''
-            nmat_s(nm, n-1, n-2,    0.0);
+            nmat_s(&nm, n-1, n-1,    2.0); // 2*b[n-1] = f''
+            nmat_s(&nm, n-1, n-2,    0.0);
             rhs.v[n-1] = ns->opts.rightval;
             break;
         case NSP_FIRST_DERIV:
             // c[n-1] = f', needs to be re-expressed in terms of b: (b[n-2]+2b[n-1])(x[n-1]-x[n-2])
             // = 3 (f' - (y[n-1]-y[n-2])/(x[n-1]-x[n-2]))
-            nmat_s(nm, n-1, n-1,    2.0 * (x[n-1] - x[n-2]));
-            nmat_s(nm, n-1, n-2,    1.0 * (x[n-1] - x[n-2]));
+            nmat_s(&nm, n-1, n-1,    2.0 * (x[n-1] - x[n-2]));
+            nmat_s(&nm, n-1, n-2,    1.0 * (x[n-1] - x[n-2]));
             rhs.v[n-1] = 3.0 * (ns->opts.rightval - (y[n-1] - y[n-2]) / (x[n-1] - x[n-2]));
             break;
         default:
             NSP_ASSERT(false, "invalid boundary condition");
             break;
     }
-    nmat_lu_decompose(nm, &lu_array);
+    nmat_lu_decompose(&nm, &lu_array);
     // solve the equation system to obtain the parameters b[]
-    if ((rv = nmat_lu_solve(nm, &lu_array, &rhs, &ns->cff)) != NSP_OK)
+    if ((rv = nmat_lu_solve(&nm, &lu_array, &rhs, &ns->coeff)) != NSP_OK)
         goto fail_lu_array;
-    //note we're passing ns->cff as the output we now repack it from [B, B, B] to [?,B,?] [?,B,?] 
-    NSP_ASSERT(ns->cff.len == n * 3, "");
-    nmat_sol_bbb_0b0_repack(&ns->cff, n);
+    //note we passed ns->coeff as the output we now repack it from [B, B, B] to [?,B,?] [?,B,?]
+    nmat_sol_bbb_0b0_repack(&ns->coeff, n);
     // calculate parameters a[] and c[] based on b[]
     for (long i=0; i<n-1; i++) {
-        double b0 = GET_CFF(B, i);
-        double b1 = GET_CFF(B, i+1);
-        double a = 1.0 / 3.0 * (b1 - b0) / (x[i+1] - x[i]);
-        double c = (y[i+1] - y[i]) / (x[i+1] - x[i]) -
-                    1.0 / 3.0 * (2.0 * b0 + b1) * (x[i+1] - x[i]);
-        SET_CFF(A, i, a);
-        SET_CFF(C, i, c);
+        double b0 = GET_COEFF(B, i);
+        double b1 = GET_COEFF(B, i+1);
+        double dx = x[i+1] - x[i];
+        double dy = y[i+1] - y[i];
+        SET_COEFF(A, i,     1.0 / 3.0 * (b1 - b0) / dx);
+        SET_COEFF(C, i,     dy / dx  - 1.0 / 3.0 * (2.0 * b0 + b1) * dx);
     }
 
-    ns->b0 = ns->opts.linearly_extrapolate ? 0.0 : GET_CFF(B, 0);
-    ns->c0 = GET_CFF(C, 0);
+    ns->b0 = ns->opts.linearly_extrapolate ? 0.0 : GET_COEFF(B, 0);
+    ns->c0 = GET_COEFF(C, 0);
 
     // for the right extrapolation coefficients
     // f_{n-1}(x) = b*(x-x_{n-1})^2 + c*(x-x_{n-1}) + y_{n-1}
-    double h = x[n-1] - x[n-2];
     // m_b[n-1] is determined by the boundary condition
     {
-        double am2 = GET_CFF(A, n-2), bm2 = GET_CFF(B, n-2), cm2 = GET_CFF(C, n-2);
-        SET_CFF(A, n-1, 0.0);
-        SET_CFF(C, n-1, 3.0 * am2 * h*h + 2.0 * bm2 * h + cm2); // = f'_{n-2}(x_{n-1})
+        double am2 = GET_COEFF(A, n-2),  bm2 = GET_COEFF(B, n-2),  cm2 = GET_COEFF(C, n-2);
+        double h = x[n-1] - x[n-2];
+        SET_COEFF(A, n-1,       0.0);
+        SET_COEFF(C, n-1,       3.0 * am2 * h*h + 2.0 * bm2 * h + cm2); // = f'_{n-2}(x_{n-1})
     }
     if (ns->opts.linearly_extrapolate)
-        SET_CFF(B, n-1, 0.0);
+        SET_COEFF(B, n-1,       0.0);
+
     rv = NSP_OK;
 fail_lu_array:
     nsp_ddarray_deinit(&lu_array);
 fail_rhs:
     nsp_ddarray_deinit(&rhs);
+fail_nmat:
+    nmat_deinit(&nm);
     return rv;
 }
 
@@ -490,15 +486,10 @@ static long nsp_bsearch_low_bound(double *arr, long beg, long end, double x) {
     return -1;
 }
 
-static long nspline_find_low_bound(struct nspline *ns, double x) {
-    return nsp_bsearch_low_bound(ns->dv.xs, 0, ns->dv.len, x);
-}
-
-static double nspline_interpolate(struct nspline *ns, double x)
-{
+static double nspline_interpolate(struct nspline *ns, double x) {
     long n = ns->dv.len;
     // find the closest point m_x[idx] < x, idx=0 even if x < m_x[0]
-    long idx = nspline_find_low_bound(ns, x);
+    long idx = nsp_bsearch_low_bound(ns->dv.xs, 0, ns->dv.len, x);
     idx = idx == -1 ? 0 : idx;
 
     double h = x - ns->dv.xs[idx];
@@ -507,10 +498,10 @@ static double nspline_interpolate(struct nspline *ns, double x)
         interpol = (ns->b0*h + ns->c0) * h + ns->dv.ys[0];
     } 
     else if (x > ns->dv.xs[n-1]) { // extrapolation to the right
-        interpol = (GET_CFF(B, n-1) * h + GET_CFF(C, n-1)) * h + ns->dv.ys[n-1];
+        interpol = (GET_COEFF(B, n-1) * h + GET_COEFF(C, n-1)) * h + ns->dv.ys[n-1];
     }
     else { // interpolation
-        interpol = ((GET_CFF(A, idx) * h + GET_CFF(B, idx)) * h + GET_CFF(C, idx)) * h + ns->dv.ys[idx];
+        interpol = ((GET_COEFF(A, idx) * h + GET_COEFF(B, idx)) * h + GET_COEFF(C, idx)) * h + ns->dv.ys[idx];
     }
     return interpol;
 }
@@ -518,7 +509,7 @@ static double nspline_interpolate(struct nspline *ns, double x)
 static double nspline_deriv(struct nspline *ns, int order, double x) {
     NSP_ASSERT(order > 0, "invalid derviative order");
     long n = ns->dv.len;
-    long idx = nspline_find_low_bound(ns, x);
+    long idx = nsp_bsearch_low_bound(ns->dv.xs, 0, ns->dv.len, x);
     idx = idx == -1 ? 0 : idx;
 
     double h = x - ns->dv.xs[idx];
@@ -532,13 +523,13 @@ static double nspline_deriv(struct nspline *ns, int order, double x) {
     }
     else if (x > ns->dv.xs[n - 1]) { // extrapolation to the right
         switch (order) {
-            case 1:  interpol = 2.0 * GET_CFF(B, n-1) * h + GET_CFF(C, n-1); break;
-            case 2:  interpol = 2.0 * GET_CFF(B, n-1);                       break;
-            default: interpol = 0.0;                                         break;
+            case 1:  interpol = 2.0 * GET_COEFF(B, n-1) * h + GET_COEFF(C, n-1); break;
+            case 2:  interpol = 2.0 * GET_COEFF(B, n-1);                         break;
+            default: interpol = 0.0;                                             break;
         }
     }
     else { // interpolation
-        double a = GET_CFF(A, idx), b = GET_CFF(B, idx), c = GET_CFF(C, idx);
+        double a = GET_COEFF(A, idx),  b = GET_COEFF(B, idx),  c = GET_COEFF(C, idx);
         switch (order) { 
             case 1:  interpol = (3.0 * a * h + 2.0 * b) * h + c; break;
             case 2:  interpol =  6.0 * a * h + 2.0 * b;          break;
@@ -549,7 +540,7 @@ static double nspline_deriv(struct nspline *ns, int order, double x) {
     return interpol;
 }
 
-#undef GET_CFF
-#undef SET_CFF
+#undef GET_COEFF
+#undef SET_COEFF
 
 #endif  //NSPLINE_H
