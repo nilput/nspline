@@ -54,6 +54,9 @@ struct nsp_view;
 /*--public functions--*/
 
 //returns NSP_OK on success
+//preconditions: 
+//      * data is sorted by X, so that it's strictly increasing 
+//      * there are n >= 3 datapoints
 static int nspline_init(struct nspline *ns, struct nsp_view dataview);
 
 //when initialized with this, it doesn't copy, modify nor own the data, but the data must outlive it
@@ -61,7 +64,8 @@ static struct nsp_view nsp_const_dview(double *xs, double *ys, long len);
 //when initialized with this, a copy is made and the library manages its lifetime
 static struct nsp_view nsp_copy_dview(double *xs, double *ys, long len);
 
-//free memory resources
+//free memory resources held by ns->* 
+//doesn't try to free() ns itself, as it doesn't have to be dynamically allocated
 static void nspline_deinit(struct nspline *ns);
 
 static double nspline_interpolate(struct nspline *ns, double x);
@@ -69,10 +73,11 @@ static double nspline_deriv(struct nspline *ns, int order, double x);
 
 /*--------------------*/
 
-enum ERR {
+enum NSP_ERR {
     NSP_OK = 0,
     NSP_ALLOC_ERR,
     NSP_INVALID_DVIEW,
+    NSP_TOO_FEW, //need at least 3 elements
 };
 
 //holds pointers to the dataset
@@ -151,7 +156,7 @@ fail:
 
 //internal: this only tells if copying failed
 static int nsp_is_dataview_valid__(struct nsp_view view) {
-    return view.xs && view.ys && view.len ? NSP_OK : NSP_INVALID_DVIEW;
+    return view.xs && view.ys && view.len > 0 ? NSP_OK : NSP_INVALID_DVIEW;
 }
 
 //internal function, use nsp_const_dview() and nsp_copy_dview() as temporary function arguments
@@ -226,12 +231,15 @@ static int nspline_init(struct nspline *ns, struct nsp_view dataview) {
     int rv = nsp_is_dataview_valid__(dataview);
     if (rv != NSP_OK)
         return rv;
+    if (dataview.len < 3) {
+        rv = NSP_TOO_FEW;
+        goto fail_dataview;
+    }
     ns->dv = dataview;
     ns->opts = nsp_default_opts();
     //see struct nspline to see how coefficents are stored
     if ((rv = nsp_ddarray_init(&ns->coeff, dataview.len * 3)) != NSP_OK)
         goto fail_dataview;
-    //create a matrix for solving the thing
     if ((rv = nspline_set_points__(ns)) != NSP_OK)
         goto fail_coeff;
 
